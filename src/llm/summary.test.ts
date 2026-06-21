@@ -4,6 +4,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import type { LlmProvider } from "./provider";
+import { deriveSummaryOptions } from "./chunk-config";
 import {
   MAP_REDUCE_SYSTEM_PROMPT,
   SYSTEM_PROMPT,
@@ -181,6 +182,33 @@ describe("generateSummary", () => {
     };
 
     await expect(generateSummary(slowProvider, SAMPLE_TRANSCRIPT, opts)).rejects.toThrow("Délai");
+  });
+
+  it("fait une passe unique avec la config Claude par défaut", async () => {
+    const { provider, calls } = createFakeProvider();
+    const transcript = makeTranscriptOfLength(25_000);
+    const opts = deriveSummaryOptions(120_000);
+
+    const result = await generateSummary(provider, transcript, opts);
+
+    expect(result).toBe(SAMPLE_SUMMARY);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].systemPrompt).toBe(SYSTEM_PROMPT);
+  });
+
+  it("applique le map-reduce avec la config Ollama par défaut", async () => {
+    const { provider, calls } = createFakeProvider();
+    const transcript = makeTranscriptOfLength(5_000);
+    const opts = deriveSummaryOptions(16_000);
+
+    const result = await generateSummary(provider, transcript, opts);
+
+    expect(result).toBe(SAMPLE_SUMMARY);
+    expect(calls.length).toBeGreaterThanOrEqual(3);
+
+    const lastCall = calls[calls.length - 1];
+    expect(lastCall.systemPrompt).toBe(MAP_REDUCE_SYSTEM_PROMPT);
+    expect(lastCall.userContent).toContain("Partie 1");
   });
 });
 
