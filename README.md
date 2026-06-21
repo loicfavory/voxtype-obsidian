@@ -61,8 +61,10 @@ Ouvrir **Paramètres → Options du plugin → Voxtype Meeting**.
 | **Fournisseur** | `Aucun`, `Claude (Anthropic)` ou `Ollama (local)` |
 | **Claude — clé API** | Clé API Anthropic (`sk-ant-…`). Champ masqué. |
 | **Claude — modèle** | `claude-sonnet-4-6` (défaut), `claude-opus-4-8`, `claude-haiku-4-5` |
+| **Claude — taille de chunk** | Taille maximale d'un chunk (caractères). Au-delà : map-reduce. Défaut : 120 000. |
 | **Ollama — endpoint** | URL de l'API locale, ex. `http://localhost:11434` |
 | **Ollama — modèle** | Nom du modèle servi, ex. `llama3`, `mistral` |
+| **Ollama — taille de chunk** | Taille maximale d'un chunk (caractères). Au-delà : map-reduce. Défaut : 16 000. |
 
 > **Sécurité** : la clé API et les réglages sont stockés dans le fichier `data.json` du plugin. Obsidian ne chiffre pas ce fichier : ne partagez pas votre coffre sans précaution.
 
@@ -130,7 +132,7 @@ Dossiers gérés dans le coffre :
 | Transcription vide (0 mots) | Notice, rien archivé ni injecté |
 | Aucun LLM configuré | Transcript archivé ; seul le wikilink est injecté ; Notice invitant à configurer un fournisseur |
 | LLM configuré mais indisponible (HTTP, timeout, réseau) | Transcript archivé ; repli sur le wikilink seul ; Notice d'erreur sans la clé API |
-| Transcript long | Découpage-synthèse automatique (map-reduce) ; pas de plantage |
+| Transcript long | Découpage-synthèse automatique (map-reduce) lorsque le transcript dépasse la taille de chunk configurée ; passe unique s'il tient dans un seul chunk. Le timeout interne par appel est dérivé de la taille configurée (plafonné). |
 | Note cible disparue / fermée / renommée | Transcript déjà archivé ; Notice proposant d'insérer le contenu manuellement |
 | Échec création dossier `Transcripts/` | Notice, retour idle |
 | Échec création note de transcript | Notice, retour idle |

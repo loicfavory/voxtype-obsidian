@@ -19,6 +19,7 @@ import {
 } from "./meeting-utils";
 import type { VoxtypeSettings } from "./settings";
 import { LlmError, resolveProvider } from "./llm/provider";
+import { deriveSummaryOptions, resolveChunkSize } from "./llm/chunk-config";
 import { assembleFinalSummary, generateSummary, withTimeout } from "./llm/summary";
 
 // ─── Constantes de timeout ────────────────────────────────────────────────────
@@ -295,8 +296,10 @@ export class MeetingManager {
     new Notice("Voxtype : génération du compte rendu en cours…");
 
     try {
+      const chunkSize = resolveChunkSize(settings, settings.provider);
+      const summaryOptions = deriveSummaryOptions(chunkSize);
       const summary = await withTimeout(
-        generateSummary(provider, markdown),
+        generateSummary(provider, markdown, summaryOptions),
         SUMMARY_TOTAL_TIMEOUT_MS,
       );
 

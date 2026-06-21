@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { resolveProvider, type RequestFn } from "./provider";
 import { ClaudeProvider } from "./claude-provider";
 import { OllamaProvider } from "./ollama-provider";
+import { CHUNK_DEFAULTS } from "./chunk-config";
 import type { VoxtypeSettings } from "../settings";
 
 const fakeRequestFn: RequestFn = async () => ({
@@ -20,6 +21,8 @@ const baseSettings: VoxtypeSettings = {
   claudeModel: "claude-sonnet-4-6",
   ollamaEndpoint: "http://localhost:11434",
   ollamaModel: "",
+  chunkSizeCharsClaude: CHUNK_DEFAULTS.claude.chunkSizeChars,
+  chunkSizeCharsOllama: CHUNK_DEFAULTS.ollama.chunkSizeChars,
 };
 
 describe("resolveProvider", () => {

@@ -6,6 +6,7 @@
  */
 
 import { Plugin, PluginSettingTab, Setting } from "obsidian";
+import { CHUNK_DEFAULTS } from "./llm/chunk-config";
 
 /** Fournisseurs de LLM supportés. */
 export type LlmProviderKind = "none" | "claude" | "ollama";
@@ -17,6 +18,10 @@ export interface VoxtypeSettings {
   claudeModel: string;
   ollamaEndpoint: string;
   ollamaModel: string;
+  /** Taille de chunk pour le fournisseur Claude (caractères). */
+  chunkSizeCharsClaude: number;
+  /** Taille de chunk pour le fournisseur Ollama (caractères). */
+  chunkSizeCharsOllama: number;
 }
 
 /** Valeurs par défaut des réglages. */
@@ -26,6 +31,8 @@ export const DEFAULT_SETTINGS: VoxtypeSettings = {
   claudeModel: "claude-sonnet-4-6",
   ollamaEndpoint: "http://localhost:11434",
   ollamaModel: "",
+  chunkSizeCharsClaude: CHUNK_DEFAULTS.claude.chunkSizeChars,
+  chunkSizeCharsOllama: CHUNK_DEFAULTS.ollama.chunkSizeChars,
 };
 
 /** Modèles Claude proposés dans la liste déroulante. */
@@ -104,6 +111,25 @@ export class VoxtypeSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           });
         });
+
+      new Setting(containerEl)
+        .setName("Claude — taille de chunk (caractères)")
+        .setDesc(
+          "Taille maximale d'un chunk. Au-delà, le transcript est découpé et résumé par morceaux (map-reduce). Défaut : 120 000.",
+        )
+        .addText((text) => {
+          text
+            .setPlaceholder("120000")
+            .setValue(String(this.plugin.settings.chunkSizeCharsClaude))
+            .onChange(async (value) => {
+              const parsed = Number.parseInt(value, 10);
+              this.plugin.settings.chunkSizeCharsClaude =
+                !Number.isNaN(parsed) && parsed > 0 ? parsed : CHUNK_DEFAULTS.claude.chunkSizeChars;
+              await this.plugin.saveSettings();
+            });
+          text.inputEl.type = "number";
+          return text;
+        });
     }
 
     // ── Réglages Ollama ───────────────────────────────────────────────────────
@@ -133,6 +159,25 @@ export class VoxtypeSettingTab extends PluginSettingTab {
               await this.plugin.saveSettings();
             }),
         );
+
+      new Setting(containerEl)
+        .setName("Ollama — taille de chunk (caractères)")
+        .setDesc(
+          "Taille maximale d'un chunk. Au-delà, le transcript est découpé et résumé par morceaux (map-reduce). Défaut : 16 000.",
+        )
+        .addText((text) => {
+          text
+            .setPlaceholder("16000")
+            .setValue(String(this.plugin.settings.chunkSizeCharsOllama))
+            .onChange(async (value) => {
+              const parsed = Number.parseInt(value, 10);
+              this.plugin.settings.chunkSizeCharsOllama =
+                !Number.isNaN(parsed) && parsed > 0 ? parsed : CHUNK_DEFAULTS.ollama.chunkSizeChars;
+              await this.plugin.saveSettings();
+            });
+          text.inputEl.type = "number";
+          return text;
+        });
     }
   }
 }
