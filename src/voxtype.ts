@@ -38,21 +38,15 @@ import type { ExecException } from "child_process";
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { execFile } = require("child_process") as typeof import("child_process");
 
-export interface MeetingShowResult {
-  status: "active" | "completed" | "paused" | "unknown";
-  words: number;
-  segments: number;
-  id: string | null;
-}
+import {
+  type CliError,
+  type CliResult,
+  classifyAvailability,
+  type MeetingShowResult,
+  parseMeetingShow,
+} from "./voxtype-parse";
 
-export interface CliError {
-  kind: "cli-error";
-  message: string;
-  code: number | null;
-  stderr: string;
-}
-
-export type CliResult<T> = { ok: true; value: T } | { ok: false; error: CliError };
+export type { CliError, CliResult, MeetingShowResult };
 
 /** Exécute `voxtype <args>` et retourne stdout ou une CliError. */
 function runVoxtype(args: string[]): Promise<CliResult<string>> {
@@ -123,27 +117,6 @@ export async function showLatestMeeting(): Promise<CliResult<MeetingShowResult>>
   return { ok: true, value: parseMeetingShow(result.value) };
 }
 
-/** Parse la sortie de `voxtype meeting show` pour extraire status, words, segments, id. */
-function parseMeetingShow(output: string): MeetingShowResult {
-  const statusMatch = /^Status:\s+(\S+)/im.exec(output);
-  const wordsMatch = /^Words:\s+(\d+)/im.exec(output);
-  const segmentsMatch = /^Segments:\s+(\d+)/im.exec(output);
-  const idMatch = /^ID:\s+(\S+)/im.exec(output);
-
-  const rawStatus = statusMatch?.[1]?.toLowerCase() ?? "unknown";
-  let status: MeetingShowResult["status"] = "unknown";
-  if (rawStatus === "active") status = "active";
-  else if (rawStatus === "completed") status = "completed";
-  else if (rawStatus === "paused") status = "paused";
-
-  return {
-    status,
-    words: wordsMatch ? parseInt(wordsMatch[1], 10) : 0,
-    segments: segmentsMatch ? parseInt(segmentsMatch[1], 10) : 0,
-    id: idMatch?.[1] ?? null,
-  };
-}
-
 /**
  * Exporte la dernière réunion en Markdown (stdout).
  * Format : `voxtype meeting export latest -f markdown --speakers --timestamps --metadata`
@@ -167,12 +140,5 @@ export async function exportLatestMarkdown(): Promise<CliResult<string>> {
  */
 export async function checkVoxtypeAvailable(): Promise<boolean> {
   const result = await runVoxtype(["meeting", "status"]);
-  // Un code de sortie non-zéro sur "status" (ex. daemon arrêté) peut renvoyer une erreur
-  // mais si le binaire répond avec stderr = "No meeting currently in progress", c'est OK.
-  if (result.ok) return true;
-  // ENOENT = binaire absent
-  if (result.error.message.includes("ENOENT")) return false;
-  // Autres erreurs : le binaire existe mais quelque chose cloche ; on considère disponible
-  // pour laisser l'erreur se manifester lors de l'action réelle.
-  return true;
+  return classifyAvailability(result);
 }
