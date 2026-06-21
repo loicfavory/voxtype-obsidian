@@ -2,7 +2,7 @@
  * summary.test.ts — Tests unitaires de la logique pure de génération de compte rendu.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { LlmProvider } from "./provider";
 import {
   MAP_REDUCE_SYSTEM_PROMPT,
@@ -13,6 +13,7 @@ import {
   generateSummary,
   needsChunking,
   splitTranscript,
+  withTimeout,
 } from "./summary";
 
 const SAMPLE_TRANSCRIPT = `# Réunion test
@@ -180,5 +181,24 @@ describe("generateSummary", () => {
     };
 
     await expect(generateSummary(slowProvider, SAMPLE_TRANSCRIPT, opts)).rejects.toThrow("Délai");
+  });
+});
+
+describe("withTimeout", () => {
+  it("annule le timer si la promesse résout avant l'expiration", async () => {
+    vi.useFakeTimers();
+
+    try {
+      const promise = withTimeout(
+        new Promise<string>((resolve) => setTimeout(() => resolve("ok"), 50)),
+        100,
+      );
+
+      vi.advanceTimersByTime(50);
+      await expect(promise).resolves.toBe("ok");
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
