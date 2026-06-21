@@ -7,7 +7,6 @@
 
 import { Notice, Plugin, setIcon } from "obsidian";
 import { MeetingManager } from "./meeting-manager";
-import { DEFAULT_SETTINGS, VoxtypeSettingTab, type VoxtypeSettings } from "./settings";
 
 // Icônes Lucide disponibles dans Obsidian pour les différents états
 const ICON_IDLE = "mic";
@@ -15,20 +14,13 @@ const ICON_RECORDING = "mic-off";
 const ICON_TRANSCRIBING = "loader";
 
 export default class VoxtypeMeetingPlugin extends Plugin {
-  declare settings: VoxtypeSettings;
   private manager!: MeetingManager;
   private ribbonIconEl: HTMLElement | null = null;
 
   async onload(): Promise<void> {
-    await this.loadSettings();
-
-    this.manager = new MeetingManager(
-      this.app,
-      (phase) => {
-        this.updateRibbonIcon(phase);
-      },
-      () => this.settings,
-    );
+    this.manager = new MeetingManager(this.app, (phase) => {
+      this.updateRibbonIcon(phase);
+    });
 
     // ── Icône ruban ──────────────────────────────────────────────────────────
     this.ribbonIconEl = this.addRibbonIcon(ICON_IDLE, "Voxtype : démarrer une réunion", () => {
@@ -51,17 +43,6 @@ export default class VoxtypeMeetingPlugin extends Plugin {
         this.handleStopMeeting();
       },
     });
-
-    // ── Réglages ─────────────────────────────────────────────────────────────
-    this.addSettingTab(new VoxtypeSettingTab(this.app, this));
-  }
-
-  async loadSettings(): Promise<void> {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-  }
-
-  async saveSettings(): Promise<void> {
-    await this.saveData(this.settings);
   }
 
   onunload(): void {
