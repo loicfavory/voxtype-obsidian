@@ -37,6 +37,13 @@ const REQUEST_TIMEOUT_MAX_MS = 240_000;
 /**
  * Sélectionne la taille de chunk du fournisseur actif.
  * Retombe sur le défaut si la valeur persistée est absente, 0, négative ou NaN.
+ *
+ * Cette fonction constitue une 2e barrière de compilation : sa logique de
+ * sélection par fournisseur (`provider === 'claude'` / `provider === 'ollama'`)
+ * ne couvrirait pas un nouveau membre ajouté à l'union `LlmProviderKind` sans
+ * y être aussi référencé. Combinée au `Record<LlmProviderKind, ChunkConfig>`
+ * de `CHUNK_DEFAULTS`, tout fournisseur ajouté à l'union et oublié ici provoque
+ * une erreur de compilation, forçant sa déclaration explicite.
  */
 export function resolveChunkSize(settings: VoxtypeSettings, provider: LlmProviderKind): number {
   const raw =

@@ -2,8 +2,15 @@
  * chunk-config.test.ts — Tests unitaires de la configuration de découpage.
  */
 
-import { describe, expect, it } from "vitest";
-import type { VoxtypeSettings } from "../settings";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("obsidian", () => ({
+  Plugin: class {},
+  PluginSettingTab: class {},
+  Setting: class {},
+}));
+
+import { DEFAULT_SETTINGS, type VoxtypeSettings } from "../settings";
 import {
   CHUNK_DEFAULTS,
   deriveRequestTimeoutMs,
@@ -29,6 +36,11 @@ describe("CHUNK_DEFAULTS", () => {
     expect(CHUNK_DEFAULTS.none.chunkSizeChars).toBe(16_000);
     expect(CHUNK_DEFAULTS.ollama.chunkSizeChars).toBe(16_000);
     expect(CHUNK_DEFAULTS.claude.chunkSizeChars).toBe(120_000);
+  });
+
+  it("propage la source unique de vérité jusqu'à DEFAULT_SETTINGS", () => {
+    expect(DEFAULT_SETTINGS.chunkSizeCharsClaude).toBe(CHUNK_DEFAULTS.claude.chunkSizeChars);
+    expect(DEFAULT_SETTINGS.chunkSizeCharsOllama).toBe(CHUNK_DEFAULTS.ollama.chunkSizeChars);
   });
 });
 
@@ -96,6 +108,14 @@ describe("resolveChunkSize", () => {
       chunkSizeCharsOllama: 8_000,
     });
     expect(resolveChunkSize(settings, "claude")).toBe(100_000);
+  });
+
+  it("ignore la valeur Claude pour le fournisseur Ollama", () => {
+    const settings = makeSettings({
+      chunkSizeCharsClaude: 100_000,
+      chunkSizeCharsOllama: 8_000,
+    });
+    expect(resolveChunkSize(settings, "ollama")).toBe(8_000);
   });
 
   it("retombe sur le défaut si la valeur est absente", () => {
