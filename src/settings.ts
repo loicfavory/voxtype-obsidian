@@ -80,20 +80,16 @@ export class VoxtypeSettingTab extends PluginSettingTab {
       new Setting(containerEl)
         .setName("Claude — clé API")
         .setDesc("Votre clé API Anthropic. Elle est stockée en clair dans data.json.")
-        .addText((text) =>
+        .addText((text) => {
           text
             .setPlaceholder("sk-ant-…")
             .setValue(this.plugin.settings.claudeApiKey)
             .onChange(async (value) => {
               this.plugin.settings.claudeApiKey = value;
               await this.plugin.saveSettings();
-            }),
-        )
-        .then((setting) => {
-          const input = setting.controlEl.querySelector("input");
-          if (input !== null) {
-            input.setAttribute("type", "password");
-          }
+            });
+          text.inputEl.type = "password";
+          return text;
         });
 
       new Setting(containerEl)

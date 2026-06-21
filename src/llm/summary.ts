@@ -68,6 +68,11 @@ export interface SummaryOptions {
  *
  * Les seuils sont volontairement prudents : on découpe avant d'atteindre la
  * fenêtre de contexte, tout en laissant de la marge pour le prompt système.
+ *
+ * Invariante implicite : `maxChunkChars <= chunkThresholdChars`. Si ce n'est
+ * pas le cas, `generateSummary` peut prendre la branche `chunks.length === 1`
+ * pour un transcript dépassant pourtant `chunkThresholdChars`, masquant une
+ * configuration incohérente.
  */
 export const DEFAULT_SUMMARY_OPTIONS: SummaryOptions = {
   chunkThresholdChars: 24_000,
