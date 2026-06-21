@@ -46,6 +46,7 @@ export class ClaudeProvider implements LlmProvider {
           system: systemPrompt,
           messages: [{ role: "user", content: userContent }],
         }),
+        throw: false,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

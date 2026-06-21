@@ -10,8 +10,9 @@ import { LlmError } from "./provider";
 
 /** Prompt système figé imposant la structure verrouillée en français. */
 export const SYSTEM_PROMPT = `Tu es un assistant de rédaction de compte rendu de réunion.
-Tu reçois un transcript de réunion. Les en-têtes de locuteurs (par exemple ">  "Vous". Tu dois les identifier depuis le dialogue.
-Les autres locuteurs ("Remote", "SPEAKER_00", "SPEAKER_01"…) peuvent couvrir une ou plusieurs personnes distinctes : déduis le nombre réel de personnes distinctes à partir du dialogue et nomme-les "Pers1", "Pers2", "Pers3"… dans l'ordre d'apparition de leurs premières interventions.
+Tu reçois un transcript de réunion dont les locuteurs sont introduits par des en-têtes du type "### You", "### Remote", "### SPEAKER_00", "### SPEAKER_01", etc.
+Le label "You" désigne le canal micro, c'est-à-dire l'utilisateur : nomme-le "Vous" dans le compte rendu.
+Les autres labels ("Remote", "SPEAKER_00", "SPEAKER_01"…) peuvent couvrir une ou plusieurs personnes distinctes : déduis le nombre réel de personnes distinctes à partir du dialogue et nomme-les "Pers1", "Pers2", "Pers3"… dans l'ordre d'apparition de leurs premières interventions.
 
 Réponds UNIQUEMENT en français, en Markdown, avec EXACTEMENT les sections suivantes dans CET ORDRE, sans rien ajouter avant la première section ni après la dernière :
 
@@ -56,7 +57,10 @@ export interface SummaryOptions {
   chunkThresholdChars: number;
   /** Taille maximale d'un chunk (caractères). */
   maxChunkChars: number;
-  /** Timeout par appel LLM en ms. */
+  /**
+   * Timeout par appel LLM en ms.
+   * Ce champ n'était pas dans le brief initial mais appartient logiquement aux options.
+   */
   requestTimeoutMs: number;
 }
 
@@ -190,12 +194,14 @@ export async function generateSummary(
 
 /** Enrobe une promesse avec un timeout ; rejette `LlmError("timeout")` au-delà. */
 export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let id: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    const id = setTimeout(() => {
-      clearTimeout(id);
+    id = setTimeout(() => {
       reject(new LlmError("timeout", `Délai de ${ms} ms dépassé.`));
     }, ms);
   });
 
-  return Promise.race([promise, timeoutPromise]);
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (id !== undefined) clearTimeout(id);
+  });
 }

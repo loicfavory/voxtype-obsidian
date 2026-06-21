@@ -42,6 +42,7 @@ export class OllamaProvider implements LlmProvider {
           ],
           stream: false,
         }),
+        throw: false,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

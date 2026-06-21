@@ -45,8 +45,14 @@ describe("ClaudeProvider", () => {
 
     expect(result).toBe("Résumé généré");
     expect(calls).toHaveLength(1);
-    const call = calls[0] as { url: string; headers: Record<string, string>; body: string };
+    const call = calls[0] as {
+      url: string;
+      headers: Record<string, string>;
+      body: string;
+      throw?: boolean;
+    };
     expect(call.url).toBe("https://api.anthropic.com/v1/messages");
+    expect(call.throw).toBe(false);
     expect(call.headers["x-api-key"]).toBe("test-key");
     expect(call.headers["anthropic-version"]).toBe("2023-06-01");
     const body = JSON.parse(call.body) as Record<string, unknown>;

@@ -29,7 +29,11 @@ const START_CONFIRM_TIMEOUT_MS = 20_000;
 const TRANSCRIPT_COMPLETE_TIMEOUT_MS = 120_000;
 /** Intervalle de polling. */
 const POLL_INTERVAL_MS = 2_000;
-/** Délai max total pour la génération du compte rendu (map-reduce inclus). */
+/**
+ * Délai max total pour la génération du compte rendu (map-reduce inclus).
+ * `generateSummary` applique aussi un timeout par appel LLM ; ce timeout global
+ * protège contre une accumulation imprévue d'appels en map-reduce.
+ */
 const SUMMARY_TOTAL_TIMEOUT_MS = 300_000;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -280,11 +284,11 @@ export class MeetingManager {
     const provider = resolveProvider(settings, requestUrl);
 
     if (provider === null) {
-      await this.injectLink(linkText, target, transcriptPath);
       new Notice(
         "Voxtype : aucun LLM configuré → lien seul inséré. " +
           "Configurez un fournisseur dans les réglages pour obtenir un compte rendu.",
       );
+      await this.injectLink(linkText, target, transcriptPath);
       return;
     }
 

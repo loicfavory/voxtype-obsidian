@@ -44,8 +44,9 @@ describe("OllamaProvider", () => {
 
     expect(result).toBe("Résumé local");
     expect(calls).toHaveLength(1);
-    const call = calls[0] as { url: string; body: string };
+    const call = calls[0] as { url: string; body: string; throw?: boolean };
     expect(call.url).toBe("http://localhost:11434/api/chat");
+    expect(call.throw).toBe(false);
     const body = JSON.parse(call.body) as Record<string, unknown>;
     expect(body.model).toBe("llama3");
     expect(body.stream).toBe(false);
