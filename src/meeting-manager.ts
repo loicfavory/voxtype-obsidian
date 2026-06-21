@@ -2,7 +2,7 @@
  * meeting-manager.ts — Logique métier du plugin : start/stop, polling, archivage et injection de lien.
  */
 
-import { App, Editor, MarkdownView, Notice, TFile } from "obsidian";
+import { App, Editor, MarkdownView, Notice, requestUrl, TFile } from "obsidian";
 import {
   checkVoxtypeAvailable,
   exportLatestMarkdown,
@@ -17,6 +17,9 @@ import {
   clampOffset,
   sanitizeFileName,
 } from "./meeting-utils";
+import type { VoxtypeSettings } from "./settings";
+import { LlmError, resolveProvider } from "./llm/provider";
+import { assembleFinalSummary, generateSummary, withTimeout } from "./llm/summary";
 
 // ─── Constantes de timeout ────────────────────────────────────────────────────
 
@@ -26,6 +29,12 @@ const START_CONFIRM_TIMEOUT_MS = 20_000;
 const TRANSCRIPT_COMPLETE_TIMEOUT_MS = 120_000;
 /** Intervalle de polling. */
 const POLL_INTERVAL_MS = 2_000;
+/**
+ * Délai max total pour la génération du compte rendu (map-reduce inclus).
+ * `generateSummary` applique aussi un timeout par appel LLM ; ce timeout global
+ * protège contre une accumulation imprévue d'appels en map-reduce.
+ */
+const SUMMARY_TOTAL_TIMEOUT_MS = 300_000;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -60,10 +69,17 @@ export class MeetingManager {
   private app: App;
   /** Callback appelé à chaque changement d'état (pour mettre à jour l'icône ruban). */
   private onStateChange: (phase: PluginState["phase"]) => void;
+  /** Getter vers les réglages courants du plugin (lecture au moment de l'arrêt). */
+  private getSettings: () => VoxtypeSettings;
 
-  constructor(app: App, onStateChange: (phase: PluginState["phase"]) => void) {
+  constructor(
+    app: App,
+    onStateChange: (phase: PluginState["phase"]) => void,
+    getSettings: () => VoxtypeSettings,
+  ) {
     this.app = app;
     this.onStateChange = onStateChange;
+    this.getSettings = getSettings;
   }
 
   get currentPhase(): PluginState["phase"] {
@@ -251,7 +267,63 @@ export class MeetingManager {
     }
 
     const linkText = buildWikilink(folderPath, transcriptFile.basename, title);
-    await this.injectLink(linkText, target, transcriptFile.path);
+    await this.generateAndInjectSummary(markdown, linkText, target, transcriptFile.path);
+  }
+
+  /**
+   * Tente de générer un compte rendu par LLM puis l'injecte avec le lien.
+   * En cas d'absence de LLM ou d'échec, retombe sur le repli US-02a (lien seul).
+   */
+  private async generateAndInjectSummary(
+    markdown: string,
+    linkText: string,
+    target: InjectionTarget | null,
+    transcriptPath: string,
+  ): Promise<void> {
+    const settings = this.getSettings();
+    const provider = resolveProvider(settings, requestUrl);
+
+    if (provider === null) {
+      new Notice(
+        "Voxtype : aucun LLM configuré → lien seul inséré. " +
+          "Configurez un fournisseur dans les réglages pour obtenir un compte rendu.",
+      );
+      await this.injectLink(linkText, target, transcriptPath);
+      return;
+    }
+
+    new Notice("Voxtype : génération du compte rendu en cours…");
+
+    try {
+      const summary = await withTimeout(
+        generateSummary(provider, markdown),
+        SUMMARY_TOTAL_TIMEOUT_MS,
+      );
+
+      if (summary.trim() === "") {
+        throw new LlmError("empty", "Le LLM a renvoyé un compte rendu vide.");
+      }
+
+      const fullText = assembleFinalSummary(summary, linkText);
+      await this.injectText(fullText, target, {
+        success: `Voxtype : compte rendu généré et transcript archivé dans ${transcriptPath}.`,
+        missingTarget:
+          `Voxtype : transcript archivé dans ${transcriptPath}.\n` +
+          "Aucune note cible n'était ouverte : insérez le compte rendu manuellement.",
+        inaccessibleTarget:
+          `Voxtype : transcript archivé dans ${transcriptPath}.\n` +
+          "La note cible n'est plus accessible : insérez le compte rendu manuellement.",
+        fallbackSuccess: `Voxtype : compte rendu généré et transcript archivé dans ${transcriptPath} (modification directe).`,
+        fallbackErrorPrefix: `Voxtype : transcript archivé dans ${transcriptPath}, mais impossible d'écrire le compte rendu.`,
+      });
+    } catch (err) {
+      const message = err instanceof LlmError ? err.message : String(err);
+      await this.injectLink(linkText, target, transcriptPath);
+      new Notice(
+        `Voxtype : échec de la génération du compte rendu. ${message}\n` +
+          "Transcript archivé et lien seul inséré.",
+      );
+    }
   }
 
   /**
@@ -287,7 +359,7 @@ export class MeetingManager {
   }
 
   /**
-   * Injecte le wikilink `linkText` à la position mémorisée dans la note cible.
+   * Injecte un wikilink à la position mémorisée dans la note cible.
    * Gère les cas : note disparue/renommée, note non ouverte, offset invalide.
    */
   private async injectLink(
@@ -295,12 +367,37 @@ export class MeetingManager {
     target: InjectionTarget | null,
     transcriptPath: string,
   ): Promise<void> {
+    return this.injectText(linkText, target, {
+      success: `Voxtype : transcription archivée dans ${transcriptPath} et lien injecté.`,
+      missingTarget:
+        `Voxtype : transcript archivé dans ${transcriptPath}.\n` +
+        "Aucune note cible n'était ouverte au démarrage : insérez le lien manuellement.",
+      inaccessibleTarget:
+        `Voxtype : transcript archivé dans ${transcriptPath}.\n` +
+        "La note cible n'est plus accessible : insérez le lien manuellement.",
+      fallbackSuccess: `Voxtype : transcription archivée dans ${transcriptPath} et lien injecté (modification directe).`,
+      fallbackErrorPrefix: `Voxtype : transcript archivé dans ${transcriptPath}, mais impossible d'écrire le lien.`,
+    });
+  }
+
+  /**
+   * Injecte du texte à la position mémorisée dans la note cible.
+   * Gère les cas : note disparue/renommée, note non ouverte, offset invalide.
+   */
+  private async injectText(
+    text: string,
+    target: InjectionTarget | null,
+    notices: {
+      success: string;
+      missingTarget: string;
+      inaccessibleTarget: string;
+      fallbackSuccess: string;
+      fallbackErrorPrefix: string;
+    },
+  ): Promise<void> {
     // Cas : aucune cible mémorisée (pas de note ouverte au démarrage)
     if (target === null) {
-      new Notice(
-        `Voxtype : transcript archivé dans ${transcriptPath}.\n` +
-          "Aucune note cible n'était ouverte au démarrage : insérez le lien manuellement.",
-      );
+      new Notice(notices.missingTarget);
       return;
     }
 
@@ -308,17 +405,14 @@ export class MeetingManager {
     const abstractFile = this.app.vault.getAbstractFileByPath(target.filePath);
 
     if (!(abstractFile instanceof TFile)) {
-      new Notice(
-        `Voxtype : transcript archivé dans ${transcriptPath}.\n` +
-          "La note cible n'est plus accessible : insérez le lien manuellement.",
-      );
+      new Notice(notices.inaccessibleTarget);
       return;
     }
 
     // Tenter d'injecter via l'Editor si la note est ouverte dans une vue
-    const injected = this.tryInjectViaEditor(abstractFile, target.charOffset, linkText);
+    const injected = this.tryInjectViaEditor(abstractFile, target.charOffset, text);
     if (injected) {
-      new Notice(`Voxtype : transcription archivée dans ${transcriptPath} et lien injecté.`);
+      new Notice(notices.success);
       return;
     }
 
@@ -326,16 +420,13 @@ export class MeetingManager {
     try {
       const content = await this.app.vault.read(abstractFile);
       const safeOffset = clampOffset(target.charOffset, content.length);
-      const newContent = content.slice(0, safeOffset) + linkText + content.slice(safeOffset);
+      const newContent = content.slice(0, safeOffset) + text + content.slice(safeOffset);
       await this.app.vault.modify(abstractFile, newContent);
-      new Notice(
-        `Voxtype : transcription archivée dans ${transcriptPath} et lien injecté (modification directe).`,
-      );
+      new Notice(notices.fallbackSuccess);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       new Notice(
-        `Voxtype : transcript archivé dans ${transcriptPath}, mais impossible d'écrire le lien.\n${message}\n` +
-          "Insérez le lien manuellement.",
+        `${notices.fallbackErrorPrefix}\n${message}\n` + "Insérez le contenu manuellement.",
       );
     }
   }
