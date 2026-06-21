@@ -27,6 +27,7 @@ function makeSettings(partial: Partial<VoxtypeSettings> = {}): VoxtypeSettings {
     ollamaModel: "",
     chunkSizeCharsClaude: CHUNK_DEFAULTS.claude.chunkSizeChars,
     chunkSizeCharsOllama: CHUNK_DEFAULTS.ollama.chunkSizeChars,
+    meetingsFolder: DEFAULT_SETTINGS.meetingsFolder,
     ...partial,
   };
 }

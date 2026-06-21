@@ -2,12 +2,19 @@
  * provider.test.ts — Tests de la résolution du fournisseur LLM.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("obsidian", () => ({
+  Plugin: class {},
+  PluginSettingTab: class {},
+  Setting: class {},
+}));
+
 import { resolveProvider, type RequestFn } from "./provider";
 import { ClaudeProvider } from "./claude-provider";
 import { OllamaProvider } from "./ollama-provider";
 import { CHUNK_DEFAULTS } from "./chunk-config";
-import type { VoxtypeSettings } from "../settings";
+import { DEFAULT_SETTINGS, type VoxtypeSettings } from "../settings";
 
 const fakeRequestFn: RequestFn = async () => ({
   status: 200,
@@ -23,6 +30,7 @@ const baseSettings: VoxtypeSettings = {
   ollamaModel: "",
   chunkSizeCharsClaude: CHUNK_DEFAULTS.claude.chunkSizeChars,
   chunkSizeCharsOllama: CHUNK_DEFAULTS.ollama.chunkSizeChars,
+  meetingsFolder: DEFAULT_SETTINGS.meetingsFolder,
 };
 
 describe("resolveProvider", () => {

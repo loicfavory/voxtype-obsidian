@@ -36,7 +36,23 @@ Plugin Obsidian (TypeScript) qui pilote une réunion Voxtype depuis l'éditeur, 
 Au démarrage :
 - Le titre est généré automatiquement (`Réunion du dd/mm/YY à HH:ii`)
 - La note active et la position du curseur sont mémorisées comme cible d'injection
+- Si **aucune note n'est active**, le plugin crée et ouvre une note dédiée dans le dossier réglable « Dossier des réunions » (`Réunions/` par défaut)
+- Un **marqueur visuel** est posé à l'emplacement d'injection : un callout `> [!info] 🎙️ Transcription en cours…` suivi d'un identifiant unique
 - Une notification confirme quand l'enregistrement est actif (polling)
+
+### Marqueur visuel « transcription en cours »
+
+Dès le démarrage, un callout est inséré à l'endroit exact où le compte rendu sera injecté à l'arrêt.
+
+- **Animation** : en mode édition (Source ou Live Preview), des points défilent en boucle (`.` → `..` → `…` → retour) toutes les 600 ms. L'animation repose sur une décoration CodeMirror pure : elle ne modifie jamais le document, ne pollue pas l'historique d'annulation, ne vole pas le focus et ne déplace pas le curseur.
+- **Étendue temporelle** : l'animation tourne pendant tout l'enregistrement **et** pendant la génération du compte rendu après l'arrêt.
+- **Remplacement** : au moment de l'injection finale, le marqueur est remplacé sur place par :
+  1. le compte rendu LLM + lien (si un LLM est configuré et fonctionne) ;
+  2. le lien seul vers le transcript (repli si aucun LLM ou échec) ;
+  3. la mention « Réunion sans contenu » si le transcript est vide.
+- **Hors-focus** : si l'utilisateur bascule sur une autre note, l'animation est figée (le callout reste visible dans le fichier, mais sans points animés) et elle reprend au retour sur la note.
+- **Mode lecture pur** : le callout reste visible comme texte statique ; l'animation des points n'est pas rendue (comportement accepté).
+- **Robustesse** : le marqueur est retrouvé par son identifiant dans le texte, même si l'utilisateur écrit avant ou referme/rouvre la note. S'il a été supprimé manuellement, l'injection retombe gracieusement sur la position mémorisée.
 
 ### Arrêter une réunion
 
@@ -58,6 +74,7 @@ Ouvrir **Paramètres → Options du plugin → Voxtype Meeting**.
 
 | Option | Description |
 |--------|-------------|
+| **Dossier des réunions** | Dossier de création de la note dédiée quand aucune note n'est active (défaut : `Réunions`) |
 | **Fournisseur** | `Aucun`, `Claude (Anthropic)` ou `Ollama (local)` |
 | **Claude — clé API** | Clé API Anthropic (`sk-ant-…`). Champ masqué. |
 | **Claude — modèle** | `claude-sonnet-4-6` (défaut), `claude-opus-4-8`, `claude-haiku-4-5` |
@@ -111,6 +128,7 @@ src/
   voxtype.ts           — Interface CLI voxtype via child_process
   poller.ts            — Polling async générique (timer + timeout)
   meeting-utils.ts     — Helpers purs (titre, nom de fichier, wikilink)
+  recording-label.ts   — Marqueur visuel : logique pure + décoration CM6
   llm/
     provider.ts        — Contrat `LlmProvider` et résolution selon les réglages
     claude-provider.ts — Appel API Anthropic Messages via `requestUrl`
@@ -119,6 +137,7 @@ src/
 
 Dossiers gérés dans le coffre :
 - `Transcripts/` — Dossier racine où les transcripts sont archivés (créé automatiquement)
+- `<Dossier des réunions>/` — Dossier où sont créées les notes dédiées quand aucune note n'est active (défaut `Réunions/`)
 ```
 
 ## Comportement sur les cas d'erreur
@@ -129,7 +148,7 @@ Dossiers gérés dans le coffre :
 | Démarrage non confirmé (timeout 20 s) | Notice, retour en état idle |
 | Transcription qui tarde | Notice continue, polling non bloquant |
 | Timeout transcription (2 min) | Notice, retour idle, instruction d'export manuel |
-| Transcription vide (0 mots) | Notice, rien archivé ni injecté |
+| Transcription vide (0 mots) | Notice, rien archivé ; le marqueur est remplacé par « Réunion sans contenu » |
 | Aucun LLM configuré | Transcript archivé ; seul le wikilink est injecté ; Notice invitant à configurer un fournisseur |
 | LLM configuré mais indisponible (HTTP, timeout, réseau) | Transcript archivé ; repli sur le wikilink seul ; Notice d'erreur sans la clé API |
 | Transcript long | Découpage-synthèse automatique (map-reduce) lorsque le transcript dépasse la taille de chunk configurée ; passe unique s'il tient dans un seul chunk. Le timeout interne par appel est dérivé de la taille configurée (plafonné). |

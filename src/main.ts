@@ -7,6 +7,7 @@
 
 import { Notice, Plugin, setIcon } from "obsidian";
 import { MeetingManager } from "./meeting-manager";
+import { createRecordingLabelExtension } from "./recording-label";
 import { DEFAULT_SETTINGS, VoxtypeSettingTab, type VoxtypeSettings } from "./settings";
 
 // Icônes Lucide disponibles dans Obsidian pour les différents états
@@ -28,6 +29,16 @@ export default class VoxtypeMeetingPlugin extends Plugin {
         this.updateRibbonIcon(phase);
       },
       () => this.settings,
+    );
+
+    // ── Extension d'éditeur : animation du marqueur ──────────────────────────
+    this.registerEditorExtension(createRecordingLabelExtension());
+
+    // Figer/reprendre l'animation selon la note active.
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", () => {
+        this.manager.refreshAnimationFocus();
+      }),
     );
 
     // ── Icône ruban ──────────────────────────────────────────────────────────
@@ -73,6 +84,7 @@ export default class VoxtypeMeetingPlugin extends Plugin {
           "Arrêtez la réunion manuellement via `voxtype meeting stop`.",
       );
     }
+    this.manager.dispose();
   }
 
   // ── Handlers ──────────────────────────────────────────────────────────────

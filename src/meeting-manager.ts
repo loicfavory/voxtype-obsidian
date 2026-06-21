@@ -21,6 +21,13 @@ import type { VoxtypeSettings } from "./settings";
 import { LlmError, resolveProvider } from "./llm/provider";
 import { deriveSummaryOptions, resolveChunkSize } from "./llm/chunk-config";
 import { assembleFinalSummary, generateSummary, withTimeout } from "./llm/summary";
+import {
+  buildEmptyMeetingText,
+  buildMarkerText,
+  findMarkerRange,
+  setRecordingLabel,
+  tickRecordingLabels,
+} from "./recording-label";
 
 // ─── Constantes de timeout ────────────────────────────────────────────────────
 
@@ -36,8 +43,16 @@ const POLL_INTERVAL_MS = 2_000;
  * protège contre une accumulation imprévue d'appels en map-reduce.
  */
 const SUMMARY_TOTAL_TIMEOUT_MS = 300_000;
+/** Intervalle entre deux frames de l'animation du marqueur visuel. */
+const LABEL_ANIMATION_INTERVAL_MS = 600;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+
+/** Identifiant du marqueur visuel posé dans la note cible. */
+interface RecordingMarker {
+  id: string;
+  filePath: string;
+}
 
 /** État interne du plugin : une réunion à la fois. */
 type PluginState =
@@ -52,8 +67,9 @@ type PluginState =
       title: string;
       meetingId: string | null;
       injectionTarget: InjectionTarget | null;
+      marker?: RecordingMarker;
     }
-  | { phase: "transcribing" };
+  | { phase: "transcribing"; marker?: RecordingMarker };
 
 /** Cible d'injection : note + offset de caractère mémorisés au démarrage. */
 export interface InjectionTarget {
@@ -72,6 +88,10 @@ export class MeetingManager {
   private onStateChange: (phase: PluginState["phase"]) => void;
   /** Getter vers les réglages courants du plugin (lecture au moment de l'arrêt). */
   private getSettings: () => VoxtypeSettings;
+  /** Timer de l'animation du marqueur. */
+  private animationTimer: number | null = null;
+  /** Marqueur actuellement suivi (pour figer/reprendre selon le focus). */
+  private currentMarker: RecordingMarker | null = null;
 
   constructor(
     app: App,
@@ -81,6 +101,14 @@ export class MeetingManager {
     this.app = app;
     this.onStateChange = onStateChange;
     this.getSettings = getSettings;
+  }
+
+  /**
+   * Libère les ressources du manager.
+   * Appelé lors du déchargement du plugin.
+   */
+  dispose(): void {
+    this.stopAnimation();
   }
 
   get currentPhase(): PluginState["phase"] {
@@ -109,7 +137,21 @@ export class MeetingManager {
     }
 
     const title = buildTimestampedTitle();
-    const injectionTarget = captureInjectionTarget(this.app);
+    let injectionTarget = captureInjectionTarget(this.app);
+
+    // Si aucune note n'est active, créer une note dédiée dans le dossier réglable.
+    if (injectionTarget === null) {
+      injectionTarget = await this.createDedicatedMeetingNote(title);
+      if (injectionTarget === null) {
+        new Notice("Voxtype : impossible de créer une note dédiée pour la réunion.");
+        this.setState({ phase: "idle" });
+        return;
+      }
+    }
+
+    const markerId = Date.now().toString();
+    const marker: RecordingMarker = { id: markerId, filePath: injectionTarget.filePath };
+    await this.insertMarker(injectionTarget, buildMarkerText(markerId));
 
     this.setState({ phase: "starting", title, injectionTarget });
 
@@ -152,7 +194,9 @@ export class MeetingManager {
       title,
       meetingId,
       injectionTarget,
+      marker,
     });
+    this.startAnimation(marker);
     new Notice(`Voxtype : enregistrement en cours — ${title}`);
   }
 
@@ -170,7 +214,7 @@ export class MeetingManager {
       return;
     }
 
-    const { injectionTarget, title } = this.state;
+    const { injectionTarget, title, marker } = this.state;
 
     const stopResult = await stopMeeting();
     if (!stopResult.ok) {
@@ -180,7 +224,7 @@ export class MeetingManager {
       return;
     }
 
-    this.setState({ phase: "transcribing" });
+    this.setState({ phase: "transcribing", marker });
     new Notice("Voxtype : transcription en cours, veuillez patienter…");
 
     // Polling jusqu'à Status: Completed
@@ -213,6 +257,26 @@ export class MeetingManager {
       new Notice(
         "Voxtype : la transcription est vide (aucun segment capté). Rien n'a été archivé ni injecté.",
       );
+      if (marker !== undefined) {
+        await this.injectText(
+          buildEmptyMeetingText(),
+          injectionTarget,
+          {
+            success: "Voxtype : la réunion était vide — mention insérée.",
+            missingTarget:
+              "Voxtype : la réunion était vide.\n" +
+              "Aucune note cible n'était ouverte : insérez la mention manuellement.",
+            inaccessibleTarget:
+              "Voxtype : la réunion était vide.\n" +
+              "La note cible n'est plus accessible : insérez la mention manuellement.",
+            fallbackSuccess:
+              "Voxtype : la réunion était vide — mention insérée (modification directe).",
+            fallbackErrorPrefix:
+              "Voxtype : la réunion était vide, mais impossible d'écrire la mention.",
+          },
+          marker.id,
+        );
+      }
       this.setState({ phase: "idle" });
       return;
     }
@@ -230,7 +294,7 @@ export class MeetingManager {
     const markdown = exportResult.value.trim();
 
     // Archiver le transcript dans Transcripts/ et injecter un wikilink
-    await this.archiveAndLinkTranscription(markdown, title, injectionTarget);
+    await this.archiveAndLinkTranscription(markdown, title, injectionTarget, marker?.id);
     this.setState({ phase: "idle" });
   }
 
@@ -244,6 +308,7 @@ export class MeetingManager {
     markdown: string,
     title: string,
     target: InjectionTarget | null,
+    markerId: string | undefined,
   ): Promise<void> {
     const folderPath = "Transcripts";
     const baseName = sanitizeFileName(title);
@@ -268,7 +333,7 @@ export class MeetingManager {
     }
 
     const linkText = buildWikilink(folderPath, transcriptFile.basename, title);
-    await this.generateAndInjectSummary(markdown, linkText, target, transcriptFile.path);
+    await this.generateAndInjectSummary(markdown, linkText, target, transcriptFile.path, markerId);
   }
 
   /**
@@ -280,6 +345,7 @@ export class MeetingManager {
     linkText: string,
     target: InjectionTarget | null,
     transcriptPath: string,
+    markerId: string | undefined,
   ): Promise<void> {
     const settings = this.getSettings();
     const provider = resolveProvider(settings, requestUrl);
@@ -289,7 +355,7 @@ export class MeetingManager {
         "Voxtype : aucun LLM configuré → lien seul inséré. " +
           "Configurez un fournisseur dans les réglages pour obtenir un compte rendu.",
       );
-      await this.injectLink(linkText, target, transcriptPath);
+      await this.injectLink(linkText, target, transcriptPath, markerId);
       return;
     }
 
@@ -308,20 +374,25 @@ export class MeetingManager {
       }
 
       const fullText = assembleFinalSummary(summary, linkText);
-      await this.injectText(fullText, target, {
-        success: `Voxtype : compte rendu généré et transcript archivé dans ${transcriptPath}.`,
-        missingTarget:
-          `Voxtype : transcript archivé dans ${transcriptPath}.\n` +
-          "Aucune note cible n'était ouverte : insérez le compte rendu manuellement.",
-        inaccessibleTarget:
-          `Voxtype : transcript archivé dans ${transcriptPath}.\n` +
-          "La note cible n'est plus accessible : insérez le compte rendu manuellement.",
-        fallbackSuccess: `Voxtype : compte rendu généré et transcript archivé dans ${transcriptPath} (modification directe).`,
-        fallbackErrorPrefix: `Voxtype : transcript archivé dans ${transcriptPath}, mais impossible d'écrire le compte rendu.`,
-      });
+      await this.injectText(
+        fullText,
+        target,
+        {
+          success: `Voxtype : compte rendu généré et transcript archivé dans ${transcriptPath}.`,
+          missingTarget:
+            `Voxtype : transcript archivé dans ${transcriptPath}.\n` +
+            "Aucune note cible n'était ouverte : insérez le compte rendu manuellement.",
+          inaccessibleTarget:
+            `Voxtype : transcript archivé dans ${transcriptPath}.\n` +
+            "La note cible n'est plus accessible : insérez le compte rendu manuellement.",
+          fallbackSuccess: `Voxtype : compte rendu généré et transcript archivé dans ${transcriptPath} (modification directe).`,
+          fallbackErrorPrefix: `Voxtype : transcript archivé dans ${transcriptPath}, mais impossible d'écrire le compte rendu.`,
+        },
+        markerId,
+      );
     } catch (err) {
       const message = err instanceof LlmError ? err.message : String(err);
-      await this.injectLink(linkText, target, transcriptPath);
+      await this.injectLink(linkText, target, transcriptPath, markerId);
       new Notice(
         `Voxtype : échec de la génération du compte rendu. ${message}\n` +
           "Transcript archivé et lien seul inséré.",
@@ -362,6 +433,104 @@ export class MeetingManager {
   }
 
   /**
+   * Insère le marqueur dans la note cible.
+   * Privilégie l'éditeur si la note est ouverte, sinon modifie le fichier.
+   */
+  private async insertMarker(target: InjectionTarget, markerText: string): Promise<void> {
+    const abstractFile = this.app.vault.getAbstractFileByPath(target.filePath);
+    if (!(abstractFile instanceof TFile)) {
+      throw new Error(`Fichier cible inaccessible : ${target.filePath}`);
+    }
+
+    let inserted = false;
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      if (inserted) return;
+      const view = leaf.view;
+      if (!(view instanceof MarkdownView)) return;
+      if (view.file?.path !== target.filePath) return;
+
+      const editor = view.editor;
+      const safeOffset = clampOffset(target.charOffset, editor.getValue().length);
+      const pos = editor.offsetToPos(safeOffset);
+      editor.replaceRange(`\n\n${markerText}\n\n`, pos);
+      inserted = true;
+    });
+
+    if (inserted) return;
+
+    const content = await this.app.vault.read(abstractFile);
+    const safeOffset = clampOffset(target.charOffset, content.length);
+    const newContent =
+      content.slice(0, safeOffset) + `\n\n${markerText}\n\n` + content.slice(safeOffset);
+    await this.app.vault.modify(abstractFile, newContent);
+  }
+
+  /**
+   * Crée le dossier des réunions s'il n'existe pas encore.
+   * Ne plante pas si le dossier existe déjà.
+   */
+  private async ensureMeetingsFolder(folderPath: string): Promise<void> {
+    const existing = this.app.vault.getAbstractFileByPath(folderPath);
+    if (existing !== null) return;
+
+    try {
+      await this.app.vault.createFolder(folderPath);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`Impossible de créer le dossier ${folderPath} : ${message}`);
+    }
+  }
+
+  /**
+   * Détermine un chemin unique dans le dossier des réunions.
+   */
+  private findUniqueMeetingPath(folderPath: string, baseName: string): string {
+    let candidate = `${folderPath}/${baseName}.md`;
+    let counter = 1;
+
+    while (this.app.vault.getAbstractFileByPath(candidate) !== null) {
+      candidate = `${folderPath}/${baseName} (${counter}).md`;
+      counter++;
+    }
+
+    return candidate;
+  }
+
+  /**
+   * Crée et ouvre une note dédiée quand aucune note n'est active au démarrage.
+   * Retourne la cible d'injection, ou null en cas d'échec.
+   */
+  private async createDedicatedMeetingNote(title: string): Promise<InjectionTarget | null> {
+    const settings = this.getSettings();
+    const folderPath = settings.meetingsFolder;
+
+    try {
+      await this.ensureMeetingsFolder(folderPath);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      new Notice(`Voxtype : échec de la création du dossier ${folderPath}.\n${message}`);
+      return null;
+    }
+
+    const baseName = sanitizeFileName(title);
+    const filePath = this.findUniqueMeetingPath(folderPath, baseName);
+
+    let file: TFile;
+    try {
+      file = await this.app.vault.create(filePath, "");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      new Notice(`Voxtype : échec de la création de la note ${filePath}.\n${message}`);
+      return null;
+    }
+
+    const leaf = this.app.workspace.getLeaf(true);
+    await leaf.openFile(file);
+
+    return { filePath: file.path, charOffset: 0 };
+  }
+
+  /**
    * Injecte un wikilink à la position mémorisée dans la note cible.
    * Gère les cas : note disparue/renommée, note non ouverte, offset invalide.
    */
@@ -369,23 +538,32 @@ export class MeetingManager {
     linkText: string,
     target: InjectionTarget | null,
     transcriptPath: string,
+    markerId: string | undefined,
   ): Promise<void> {
-    return this.injectText(linkText, target, {
-      success: `Voxtype : transcription archivée dans ${transcriptPath} et lien injecté.`,
-      missingTarget:
-        `Voxtype : transcript archivé dans ${transcriptPath}.\n` +
-        "Aucune note cible n'était ouverte au démarrage : insérez le lien manuellement.",
-      inaccessibleTarget:
-        `Voxtype : transcript archivé dans ${transcriptPath}.\n` +
-        "La note cible n'est plus accessible : insérez le lien manuellement.",
-      fallbackSuccess: `Voxtype : transcription archivée dans ${transcriptPath} et lien injecté (modification directe).`,
-      fallbackErrorPrefix: `Voxtype : transcript archivé dans ${transcriptPath}, mais impossible d'écrire le lien.`,
-    });
+    return this.injectText(
+      linkText,
+      target,
+      {
+        success: `Voxtype : transcription archivée dans ${transcriptPath} et lien injecté.`,
+        missingTarget:
+          `Voxtype : transcript archivé dans ${transcriptPath}.\n` +
+          "Aucune note cible n'était ouverte au démarrage : insérez le lien manuellement.",
+        inaccessibleTarget:
+          `Voxtype : transcript archivé dans ${transcriptPath}.\n` +
+          "La note cible n'est plus accessible : insérez le lien manuellement.",
+        fallbackSuccess: `Voxtype : transcription archivée dans ${transcriptPath} et lien injecté (modification directe).`,
+        fallbackErrorPrefix: `Voxtype : transcription archivée dans ${transcriptPath}, mais impossible d'écrire le lien.`,
+      },
+      markerId,
+    );
   }
 
   /**
    * Injecte du texte à la position mémorisée dans la note cible.
    * Gère les cas : note disparue/renommée, note non ouverte, offset invalide.
+   * Si `markerId` est fourni, la localisation se fait d'abord par recherche du
+   * marqueur dans la note ; en cas d'échec, on retombe gracieusement sur
+   * l'offset mémorisé.
    */
   private async injectText(
     text: string,
@@ -397,6 +575,7 @@ export class MeetingManager {
       fallbackSuccess: string;
       fallbackErrorPrefix: string;
     },
+    markerId: string | undefined,
   ): Promise<void> {
     // Cas : aucune cible mémorisée (pas de note ouverte au démarrage)
     if (target === null) {
@@ -410,6 +589,13 @@ export class MeetingManager {
     if (!(abstractFile instanceof TFile)) {
       new Notice(notices.inaccessibleTarget);
       return;
+    }
+
+    // Si un marqueur est suivi, tenter d'abord de localiser le texte par ce marqueur.
+    if (markerId !== undefined) {
+      const replaced = await this.tryReplaceMarker(abstractFile, markerId, text, notices.success);
+      if (replaced) return;
+      // Sinon, repli gracieux sur l'offset mémorisé ci-dessous.
     }
 
     // Tenter d'injecter via l'Editor si la note est ouverte dans une vue
@@ -431,6 +617,53 @@ export class MeetingManager {
       new Notice(
         `${notices.fallbackErrorPrefix}\n${message}\n` + "Insérez le contenu manuellement.",
       );
+    }
+  }
+
+  /**
+   * Tente de remplacer le marqueur `markerId` dans `targetFile` par `text`.
+   * Retourne `true` si le remplacement a réussi, `false` sinon.
+   */
+  private async tryReplaceMarker(
+    targetFile: TFile,
+    markerId: string,
+    text: string,
+    successNotice: string,
+  ): Promise<boolean> {
+    const content = await this.app.vault.read(targetFile);
+    const range = findMarkerRange(content, markerId);
+    if (range === null) return false;
+
+    // Tenter le remplacement via l'Editor si la note est ouverte.
+    let replaced = false;
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      if (replaced) return;
+      const view = leaf.view;
+      if (!(view instanceof MarkdownView)) return;
+      if (view.file?.path !== targetFile.path) return;
+
+      const editor = view.editor;
+      const from = editor.offsetToPos(range.start);
+      const to = editor.offsetToPos(range.end);
+      editor.replaceRange(text, from, to);
+      replaced = true;
+    });
+
+    if (replaced) {
+      new Notice(successNotice);
+      return true;
+    }
+
+    // Fallback : modification directe du fichier.
+    try {
+      const newContent = content.slice(0, range.start) + text + content.slice(range.end);
+      await this.app.vault.modify(targetFile, newContent);
+      new Notice(`${successNotice} (modification directe)`);
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      new Notice(`Voxtype : impossible de remplacer le marqueur.\n${message}`);
+      return false;
     }
   }
 
@@ -463,6 +696,47 @@ export class MeetingManager {
   private setState(next: PluginState): void {
     this.state = next;
     this.onStateChange(next.phase);
+    if (next.phase === "idle") {
+      this.stopAnimation();
+    }
+  }
+
+  // ── Animation du marqueur ─────────────────────────────────────────────────
+
+  private startAnimation(marker: RecordingMarker): void {
+    this.stopAnimation();
+    this.currentMarker = marker;
+    this.refreshAnimationFocus();
+  }
+
+  private stopAnimation(): void {
+    if (this.animationTimer !== null) {
+      window.clearInterval(this.animationTimer);
+      this.animationTimer = null;
+    }
+    this.currentMarker = null;
+    setRecordingLabel(this.app, null, null);
+  }
+
+  /**
+   * Redémarre ou arrête le timer selon le focus de la note cible.
+   * Appelé à chaque changement de feuille active (via main.ts).
+   */
+  refreshAnimationFocus(): void {
+    if (this.currentMarker === null) return;
+
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const inFocus = view !== null && view.file?.path === this.currentMarker.filePath;
+
+    if (inFocus && this.animationTimer === null) {
+      setRecordingLabel(this.app, this.currentMarker.id, this.currentMarker.filePath);
+      this.animationTimer = window.setInterval(() => {
+        tickRecordingLabels(this.app, this.currentMarker!.id, this.currentMarker!.filePath);
+      }, LABEL_ANIMATION_INTERVAL_MS);
+    } else if (!inFocus && this.animationTimer !== null) {
+      window.clearInterval(this.animationTimer);
+      this.animationTimer = null;
+    }
   }
 }
 
