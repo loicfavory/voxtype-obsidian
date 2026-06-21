@@ -1,6 +1,6 @@
 # Voxtype Meeting — Plugin Obsidian
 
-Plugin Obsidian (TypeScript) qui pilote une réunion Voxtype depuis l'éditeur et injecte la transcription à la position du curseur dans la note active.
+Plugin Obsidian (TypeScript) qui pilote une réunion Voxtype depuis l'éditeur, archive la transcription dans un dossier dédié et injecte un wikilink à la position du curseur dans la note active.
 
 ## Prérequis
 
@@ -45,8 +45,11 @@ Au démarrage :
 
 Après l'arrêt :
 - Le plugin attend la fin de la transcription (polling `voxtype meeting show latest`)
-- La transcription Markdown est injectée à la position mémorisée
-- Si la note cible a été fermée, le plugin modifie le fichier directement via l'API vault
+- La transcription Markdown est archivée dans une note du dossier `Transcripts/` (créé automatiquement s'il n'existe pas)
+- Le nom de la note est le titre de la réunion (`Réunion du dd/mm/YY à HH:ii`)
+- En cas de collision, le nom est suffixé avec ` (1)`, ` (2)`, etc.
+- Un wikilink `[[Transcripts/Titre de la réunion|Titre de la réunion]]` est injecté à la position mémorisée dans la note cible
+- Si la note cible a été fermée, renommée ou supprimée, le transcript reste archivé et une notice propose d'insérer le lien manuellement
 
 ### Icône ruban — états visuels
 
@@ -73,9 +76,12 @@ npm run format:check # Prettier (--check)
 ```
 src/
   main.ts            — Point d'entrée Plugin Obsidian (commandes, ruban)
-  meeting-manager.ts — Logique métier (start/stop, polling, injection)
+  meeting-manager.ts — Logique métier (start/stop, polling, archivage, injection de lien)
   voxtype.ts         — Interface CLI voxtype via child_process
   poller.ts          — Polling async générique (timer + timeout)
+
+Dossiers gérés dans le coffre :
+- `Transcripts/` — Dossier racine où les transcripts sont archivés (créé automatiquement)
 ```
 
 ## Comportement sur les cas d'erreur
@@ -86,8 +92,10 @@ src/
 | Démarrage non confirmé (timeout 20 s) | Notice, retour en état idle |
 | Transcription qui tarde | Notice continue, polling non bloquant |
 | Timeout transcription (2 min) | Notice, retour idle, instruction d'export manuel |
-| Transcription vide (0 mots) | Notice, rien injecté |
-| Note cible disparue / fermée | Fallback modification fichier direct ; Notice si impossible |
+| Transcription vide (0 mots) | Notice, rien archivé ni injecté |
+| Note cible disparue / fermée / renommée | Transcript déjà archivé ; Notice proposant d'insérer le lien manuellement |
+| Échec création dossier `Transcripts/` | Notice, retour idle |
+| Échec création note de transcript | Notice, retour idle |
 | Échec CLI (stderr / code non-zéro) | Notice avec message d'erreur, état cohérent |
 
 ## Hors périmètre (US suivantes)

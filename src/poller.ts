@@ -27,6 +27,7 @@ export type PollResult<T> =
 export async function poll<T>(
   check: () => Promise<T | null>,
   options: PollOptions,
+  sleepFn: (ms: number) => Promise<void> = sleep,
 ): Promise<PollResult<T>> {
   const deadline = Date.now() + options.timeoutMs;
 
@@ -47,7 +48,7 @@ export async function poll<T>(
     if (remaining <= 0) break;
 
     // Attente async non bloquante
-    await sleep(Math.min(options.intervalMs, remaining));
+    await sleepFn(Math.min(options.intervalMs, remaining));
   }
 
   return { outcome: "timeout" };

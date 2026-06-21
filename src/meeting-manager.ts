@@ -1,5 +1,5 @@
 /**
- * meeting-manager.ts — Logique métier du plugin : start/stop, polling, injection.
+ * meeting-manager.ts — Logique métier du plugin : start/stop, polling, archivage et injection de lien.
  */
 
 import { App, Editor, MarkdownView, Notice, TFile } from "obsidian";
@@ -11,6 +11,12 @@ import {
   stopMeeting,
 } from "./voxtype";
 import { poll } from "./poller";
+import {
+  buildTimestampedTitle,
+  buildWikilink,
+  clampOffset,
+  sanitizeFileName,
+} from "./meeting-utils";
 
 // ─── Constantes de timeout ────────────────────────────────────────────────────
 
@@ -147,7 +153,7 @@ export class MeetingManager {
       return;
     }
 
-    const { injectionTarget } = this.state;
+    const { injectionTarget, title } = this.state;
 
     const stopResult = await stopMeeting();
     if (!stopResult.ok) {
@@ -188,7 +194,7 @@ export class MeetingManager {
     // Vérifier le transcript vide (0 mots ou 0 segments)
     if (pollResult.value.words === 0 || pollResult.value.segments === 0) {
       new Notice(
-        "Voxtype : la transcription est vide (aucun segment capté). Rien n'a été injecté.",
+        "Voxtype : la transcription est vide (aucun segment capté). Rien n'a été archivé ni injecté.",
       );
       this.setState({ phase: "idle" });
       return;
@@ -206,29 +212,94 @@ export class MeetingManager {
 
     const markdown = exportResult.value.trim();
 
-    // Injecter dans la note cible
-    await this.injectTranscription(markdown, injectionTarget);
+    // Archiver le transcript dans Transcripts/ et injecter un wikilink
+    await this.archiveAndLinkTranscription(markdown, title, injectionTarget);
     this.setState({ phase: "idle" });
   }
 
-  // ── Injection ──────────────────────────────────────────────────────────────
+  // ── Archivage + lien ───────────────────────────────────────────────────────
 
   /**
-   * Injecte `markdown` à la position mémorisée dans la note cible.
-   * Gère les cas : note disparue/renommée, note non ouverte, offset invalide.
+   * Archive le transcript Markdown dans une note dédiée sous `Transcripts/`
+   * puis injecte un wikilink vers cette note à la position mémorisée.
    */
-  private async injectTranscription(
+  private async archiveAndLinkTranscription(
     markdown: string,
+    title: string,
     target: InjectionTarget | null,
   ): Promise<void> {
-    const toInject = `\n\n${markdown}\n`;
+    const folderPath = "Transcripts";
+    const baseName = sanitizeFileName(title);
 
+    try {
+      await this.ensureTranscriptsFolder(folderPath);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      new Notice(`Voxtype : échec de la création du dossier Transcripts.\n${message}`);
+      return;
+    }
+
+    const filePath = this.findUniqueTranscriptPath(folderPath, baseName);
+
+    let transcriptFile: TFile;
+    try {
+      transcriptFile = await this.app.vault.create(filePath, markdown);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      new Notice(`Voxtype : échec de l'archivage du transcript.\n${message}`);
+      return;
+    }
+
+    const linkText = buildWikilink(folderPath, transcriptFile.basename, title);
+    await this.injectLink(linkText, target, transcriptFile.path);
+  }
+
+  /**
+   * Crée le dossier `Transcripts` s'il n'existe pas encore.
+   * Ne plante pas si le dossier existe déjà.
+   */
+  private async ensureTranscriptsFolder(folderPath: string): Promise<void> {
+    const existing = this.app.vault.getAbstractFileByPath(folderPath);
+    if (existing !== null) return;
+
+    try {
+      await this.app.vault.createFolder(folderPath);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`Impossible de créer le dossier ${folderPath} : ${message}`);
+    }
+  }
+
+  /**
+   * Détermine un chemin de note unique dans `folderPath` à partir du nom de base.
+   * En cas de collision, suffixe avec ` (1)`, ` (2)`, etc.
+   */
+  private findUniqueTranscriptPath(folderPath: string, baseName: string): string {
+    let candidate = `${folderPath}/${baseName}.md`;
+    let counter = 1;
+
+    while (this.app.vault.getAbstractFileByPath(candidate) !== null) {
+      candidate = `${folderPath}/${baseName} (${counter}).md`;
+      counter++;
+    }
+
+    return candidate;
+  }
+
+  /**
+   * Injecte le wikilink `linkText` à la position mémorisée dans la note cible.
+   * Gère les cas : note disparue/renommée, note non ouverte, offset invalide.
+   */
+  private async injectLink(
+    linkText: string,
+    target: InjectionTarget | null,
+    transcriptPath: string,
+  ): Promise<void> {
     // Cas : aucune cible mémorisée (pas de note ouverte au démarrage)
     if (target === null) {
       new Notice(
-        "Voxtype : aucune cible d'injection mémorisée.\n" +
-          "Récupérez la transcription manuellement : " +
-          "`voxtype meeting export latest -f markdown --speakers --timestamps --metadata`",
+        `Voxtype : transcript archivé dans ${transcriptPath}.\n` +
+          "Aucune note cible n'était ouverte au démarrage : insérez le lien manuellement.",
       );
       return;
     }
@@ -238,32 +309,33 @@ export class MeetingManager {
 
     if (!(abstractFile instanceof TFile)) {
       new Notice(
-        `Voxtype : la note cible "${target.filePath}" n'est plus accessible.\n` +
-          "Récupérez la transcription manuellement : " +
-          "`voxtype meeting export latest -f markdown --speakers --timestamps --metadata`",
+        `Voxtype : transcript archivé dans ${transcriptPath}.\n` +
+          "La note cible n'est plus accessible : insérez le lien manuellement.",
       );
       return;
     }
 
     // Tenter d'injecter via l'Editor si la note est ouverte dans une vue
-    const injected = this.tryInjectViaEditor(abstractFile, target.charOffset, toInject);
+    const injected = this.tryInjectViaEditor(abstractFile, target.charOffset, linkText);
     if (injected) {
-      new Notice("Voxtype : transcription injectée dans la note.");
+      new Notice(`Voxtype : transcription archivée dans ${transcriptPath} et lien injecté.`);
       return;
     }
 
     // Fallback : modifier le fichier directement via l'API vault
     try {
       const content = await this.app.vault.read(abstractFile);
-      const safeOffset = Math.min(target.charOffset, content.length);
-      const newContent = content.slice(0, safeOffset) + toInject + content.slice(safeOffset);
+      const safeOffset = clampOffset(target.charOffset, content.length);
+      const newContent = content.slice(0, safeOffset) + linkText + content.slice(safeOffset);
       await this.app.vault.modify(abstractFile, newContent);
-      new Notice("Voxtype : transcription injectée dans la note (modification directe).");
+      new Notice(
+        `Voxtype : transcription archivée dans ${transcriptPath} et lien injecté (modification directe).`,
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       new Notice(
-        `Voxtype : impossible d'écrire dans la note.\n${message}\n` +
-          "Récupérez la transcription manuellement.",
+        `Voxtype : transcript archivé dans ${transcriptPath}, mais impossible d'écrire le lien.\n${message}\n` +
+          "Insérez le lien manuellement.",
       );
     }
   }
@@ -283,7 +355,7 @@ export class MeetingManager {
 
       const editor: Editor = view.editor;
       const docContent = editor.getValue();
-      const safeOffset = Math.min(charOffset, docContent.length);
+      const safeOffset = clampOffset(charOffset, docContent.length);
       const pos = editor.offsetToPos(safeOffset);
       editor.replaceRange(text, pos);
       injected = true;
@@ -301,20 +373,6 @@ export class MeetingManager {
 }
 
 // ─── Fonctions utilitaires ───────────────────────────────────────────────────
-
-/**
- * Génère le titre horodaté : "Réunion du dd/mm/YY à HH:ii" en heure locale.
- * Ex : "Réunion du 20/06/26 à 14:30"
- */
-export function buildTimestampedTitle(): string {
-  const now = new Date();
-  const dd = String(now.getDate()).padStart(2, "0");
-  const mm = String(now.getMonth() + 1).padStart(2, "0");
-  const yy = String(now.getFullYear()).slice(2);
-  const HH = String(now.getHours()).padStart(2, "0");
-  const ii = String(now.getMinutes()).padStart(2, "0");
-  return `Réunion du ${dd}/${mm}/${yy} à ${HH}:${ii}`;
-}
 
 /**
  * Capture la cible d'injection : note active + offset curseur dans l'éditeur.

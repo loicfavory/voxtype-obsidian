@@ -3,7 +3,7 @@
   "name": "Voxtype Meeting",
   "version": "0.1.0",
   "minAppVersion": "1.4.0",
-  "description": "Pilote une réunion Voxtype et injecte la transcription dans la note active.",
+  "description": "Pilote une réunion Voxtype, archive la transcription dans Transcripts/ et injecte un wikilink dans la note active.",
   "author": "Loic",
   "authorUrl": "",
   "isDesktopOnly": true
