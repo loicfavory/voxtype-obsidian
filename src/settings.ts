@@ -22,6 +22,8 @@ export interface VoxtypeSettings {
   chunkSizeCharsClaude: number;
   /** Taille de chunk pour le fournisseur Ollama (caractères). */
   chunkSizeCharsOllama: number;
+  /** Dossier dans lequel créer les notes dédiées quand aucune note n'est active. */
+  meetingsFolder: string;
 }
 
 /** Valeurs par défaut des réglages. */
@@ -33,6 +35,7 @@ export const DEFAULT_SETTINGS: VoxtypeSettings = {
   ollamaModel: "",
   chunkSizeCharsClaude: CHUNK_DEFAULTS.claude.chunkSizeChars,
   chunkSizeCharsOllama: CHUNK_DEFAULTS.ollama.chunkSizeChars,
+  meetingsFolder: "Réunions",
 };
 
 /** Modèles Claude proposés dans la liste déroulante. */
@@ -62,6 +65,22 @@ export class VoxtypeSettingTab extends PluginSettingTab {
     containerEl.empty();
 
     containerEl.createEl("h2", { text: "Voxtype Meeting" });
+
+    // ── Dossier des réunions ──────────────────────────────────────────────────
+    new Setting(containerEl)
+      .setName("Dossier des réunions")
+      .setDesc(
+        "Dossier dans lequel créer une note dédiée quand aucune note n'est active au démarrage d'une réunion. Créé automatiquement s'il n'existe pas.",
+      )
+      .addText((text) =>
+        text
+          .setPlaceholder("Réunions")
+          .setValue(this.plugin.settings.meetingsFolder)
+          .onChange(async (value) => {
+            this.plugin.settings.meetingsFolder = value.trim() || "Réunions";
+            await this.plugin.saveSettings();
+          }),
+      );
 
     // ── Fournisseur LLM ───────────────────────────────────────────────────────
     new Setting(containerEl)
