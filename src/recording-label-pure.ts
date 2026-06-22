@@ -64,6 +64,70 @@ export function findMarkerBlockRange(
 }
 
 /**
+ * Calcule le préfixe à ajouter avant `text` quand on remplace un bloc marqueur,
+ * de façon à préserver une séparation propre avec le paragraphe précédent.
+ */
+function computePrefix(before: string): string {
+  if (before.length === 0) return "";
+  if (!before.endsWith("\n")) return "\n\n";
+  if (!before.endsWith("\n\n")) return "\n";
+  return "";
+}
+
+/**
+ * Calcule le suffixe à ajouter après `text` quand on remplace un bloc marqueur,
+ * de façon à préserver une séparation propre avec le paragraphe suivant.
+ */
+function computeSuffix(after: string): string {
+  if (after.length === 0) return "";
+  if (!after.startsWith("\n")) return "\n\n";
+  if (!after.startsWith("\n\n")) return "\n";
+  return "";
+}
+
+/**
+ * Calcule la chaîne de recollage (glue) à insérer entre `before` et `after`
+ * quand le marqueur est effacé (remplacement vide).
+ *
+ * - Si l'un des deux côtés est vide, aucune glue n'est nécessaire.
+ * - Sinon, la glue garantit un unique séparateur de paragraphe (`\n\n`) entre
+ *   les deux blocs, sans en ajouter en trop si des sauts de ligne existent déjà
+ *   à la jonction.
+ */
+function computeEmptyGlue(before: string, after: string): string {
+  if (before === "" || after === "") return "";
+
+  const beforeHasTrailingNewline = before.endsWith("\n");
+  const afterHasLeadingNewline = after.startsWith("\n");
+  if (beforeHasTrailingNewline && afterHasLeadingNewline) {
+    return "";
+  }
+  if (beforeHasTrailingNewline || afterHasLeadingNewline) {
+    return "\n";
+  }
+  return "\n\n";
+}
+
+/**
+ * Construit la chaîne de remplacement à insérer à la place du bloc marqueur.
+ *
+ * - `before` : texte situé avant le bloc marqueur.
+ * - `after` : texte situé après le bloc marqueur.
+ * - `text` : contenu de remplacement (vide pour un effacement).
+ *
+ * Retourne la chaîne à injecter entre `before` et `after`, avec le padding
+ * nécessaire pour éviter collage et lignes blanches résiduelles.
+ */
+export function buildMarkerReplacement(before: string, after: string, text: string): string {
+  if (text === "") {
+    return computeEmptyGlue(before, after);
+  }
+  const prefix = computePrefix(before);
+  const suffix = computeSuffix(after);
+  return `${prefix}${text}${suffix}`;
+}
+
+/**
  * Frame d'animation déterministe selon le tick (compteur incrémenté à chaque intervalle).
  * Cycle de période 3 : tick 0 -> ".", 1 -> "..", 2 -> "...", 3 -> "." (= tick % 3).
  */

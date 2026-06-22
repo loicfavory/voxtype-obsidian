@@ -23,6 +23,7 @@ import { deriveSummaryOptions, resolveChunkSize } from "./llm/chunk-config";
 import { assembleFinalSummary, generateSummary, withTimeout } from "./llm/summary";
 import {
   buildEmptyMeetingText,
+  buildMarkerReplacement,
   buildMarkerText,
   findMarkerBlockRange,
   setRecordingLabel,
@@ -626,36 +627,41 @@ export class MeetingManager {
     const range = findMarkerBlockRange(content, markerId);
     if (range === null) return false;
 
-    // F-02 : remplacement symétrique avec la pose. `insertMarker` écrit
-    // `\n\n${marker}\n\n` ; on mange ce padding et on réinjecte `text` avec le
-    // minimum nécessaire pour éviter collage et lignes blanches résiduelles.
+    // F-02 / TECH-03 : remplacement symétrique avec la pose. `insertMarker`
+    // écrit `\n\n${marker}\n\n` ; on mange ce padding et on réinjecte `text`
+    // avec le minimum nécessaire pour éviter collage et lignes blanches
+    // résiduelles. En cas d'effacement (text vide), aucun padding n'est réintroduit.
     const before = content.slice(0, range.start);
     const after = content.slice(range.end);
-    const prefix =
-      before.length > 0 && !before.endsWith("\n")
-        ? "\n\n"
-        : before.endsWith("\n") && !before.endsWith("\n\n")
-          ? "\n"
-          : "";
-    const suffix =
-      after.length > 0 && !after.startsWith("\n")
-        ? "\n\n"
-        : after.startsWith("\n") && !after.startsWith("\n\n")
-          ? "\n"
-          : "";
-    const replacement = `${prefix}${text}${suffix}`;
+    const replacement = buildMarkerReplacement(before, after, text);
+
+    // TECH-03 : en cas d'effacement en fin de note, éliminer les sauts de ligne
+    // résiduels en conservant au plus un saut de ligne final si le fichier en
+    // avait un avant la pose du marqueur.
+    let newContent = content.slice(0, range.start) + replacement + content.slice(range.end);
+    if (text === "" && after === "") {
+      const hadTrailingNewline = before.endsWith("\n");
+      newContent = newContent.replace(/\n+$/, "");
+      if (hadTrailingNewline) {
+        newContent += "\n";
+      }
+    }
 
     if (activeEditor !== null) {
       const from = activeEditor.offsetToPos(range.start);
-      const to = activeEditor.offsetToPos(range.end);
-      activeEditor.replaceRange(replacement, from, to);
+      if (text === "" && after === "") {
+        const to = activeEditor.offsetToPos(content.length);
+        activeEditor.replaceRange(newContent.slice(range.start), from, to);
+      } else {
+        const to = activeEditor.offsetToPos(range.end);
+        activeEditor.replaceRange(replacement, from, to);
+      }
       if (successNotice !== "") new Notice(successNotice);
       return true;
     }
 
     // Fallback : modification directe du fichier.
     try {
-      const newContent = content.slice(0, range.start) + replacement + content.slice(range.end);
       await this.app.vault.modify(targetFile, newContent);
       if (successNotice !== "") new Notice(`${successNotice} (modification directe)`);
       return true;

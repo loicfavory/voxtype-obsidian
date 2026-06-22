@@ -19,6 +19,7 @@ import { computeFrame, findMarkerRange } from "./recording-label-pure";
 
 export {
   buildEmptyMeetingText,
+  buildMarkerReplacement,
   buildMarkerText,
   computeFrame,
   findMarkerBlockRange,
