@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildEmptyMeetingText,
+  buildMarkerReplacement,
   buildMarkerText,
   computeFrame,
   findMarkerBlockRange,
@@ -136,5 +137,49 @@ describe("buildEmptyMeetingText", () => {
     expect(text).toBe("Réunion sans contenu");
     expect(text).not.toContain("<");
     expect(text).not.toContain(">");
+  });
+});
+
+describe("buildMarkerReplacement", () => {
+  const id = "session-42";
+  const marker = buildMarkerText(id);
+
+  it("efface le marqueur en fin de note sans laisser de double saut de ligne", () => {
+    const content = `Avant\n\n${marker}`;
+    const range = findMarkerBlockRange(content, id);
+    expect(range).not.toBeNull();
+    const replacement = buildMarkerReplacement(
+      content.slice(0, range!.start),
+      content.slice(range!.end),
+      "",
+    );
+    const newContent = content.slice(0, range!.start) + replacement + content.slice(range!.end);
+    expect(newContent).toBe("Avant");
+  });
+
+  it("efface le marqueur au milieu en recollant proprement les paragraphes", () => {
+    const content = `Avant\n\n${marker}\n\nAprès`;
+    const range = findMarkerBlockRange(content, id);
+    expect(range).not.toBeNull();
+    const replacement = buildMarkerReplacement(
+      content.slice(0, range!.start),
+      content.slice(range!.end),
+      "",
+    );
+    const newContent = content.slice(0, range!.start) + replacement + content.slice(range!.end);
+    expect(newContent).toBe("Avant\n\nAprès");
+  });
+
+  it("conserve le comportement de remplacement par du contenu non vide", () => {
+    const content = `Avant\n\n${marker}\n\nAprès`;
+    const range = findMarkerBlockRange(content, id);
+    expect(range).not.toBeNull();
+    const replacement = buildMarkerReplacement(
+      content.slice(0, range!.start),
+      content.slice(range!.end),
+      "CONTENU",
+    );
+    const newContent = content.slice(0, range!.start) + replacement + content.slice(range!.end);
+    expect(newContent).toBe("Avant\n\nCONTENU\n\nAprès");
   });
 });
