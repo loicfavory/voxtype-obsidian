@@ -21,6 +21,7 @@ export {
   buildEmptyMeetingText,
   buildMarkerText,
   computeFrame,
+  findMarkerBlockRange,
   findMarkerRange,
 } from "./recording-label-pure";
 

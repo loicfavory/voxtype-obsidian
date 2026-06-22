@@ -7,6 +7,7 @@ import {
   buildEmptyMeetingText,
   buildMarkerText,
   computeFrame,
+  findMarkerBlockRange,
   findMarkerRange,
 } from "./recording-label-pure";
 
@@ -88,10 +89,51 @@ describe("computeFrame", () => {
   });
 });
 
+describe("findMarkerBlockRange", () => {
+  const id = "session-42";
+  const marker = buildMarkerText(id);
+
+  it("englobe les sauts de ligne encadrants insérés par insertMarker", () => {
+    const content = `Avant\n\n${marker}\n\nAprès`;
+    const range = findMarkerBlockRange(content, id);
+    expect(range).not.toBeNull();
+    expect(range!.start).toBe("Avant".length);
+    expect(range!.end).toBe(content.length - "Après".length);
+    expect(content.slice(range!.start, range!.end)).toBe(`\n\n${marker}\n\n`);
+  });
+
+  it("fonctionne en début de note", () => {
+    const content = `${marker}\n\nAprès`;
+    const range = findMarkerBlockRange(content, id);
+    expect(range).not.toBeNull();
+    expect(range!.start).toBe(0);
+    expect(content.slice(range!.start, range!.end)).toBe(`${marker}\n\n`);
+  });
+
+  it("fonctionne en fin de note", () => {
+    const content = `Avant\n\n${marker}`;
+    const range = findMarkerBlockRange(content, id);
+    expect(range).not.toBeNull();
+    expect(range!.end).toBe(content.length);
+    expect(content.slice(range!.start, range!.end)).toBe(`\n\n${marker}`);
+  });
+
+  it("retombe sur la ligne seule si le padding est absent", () => {
+    const content = `Avant\n${marker}\nAprès`;
+    const range = findMarkerBlockRange(content, id);
+    expect(range).not.toBeNull();
+    expect(content.slice(range!.start, range!.end)).toBe(`${marker}`);
+  });
+
+  it("retourne null si l'id est absent", () => {
+    expect(findMarkerBlockRange("Aucun marqueur", id)).toBeNull();
+  });
+});
+
 describe("buildEmptyMeetingText", () => {
-  it("mentionne 'Réunion sans contenu' sans chevrons", () => {
+  it("retourne exactement la mention 'Réunion sans contenu' sans chevrons", () => {
     const text = buildEmptyMeetingText();
-    expect(text).toContain("Réunion sans contenu");
+    expect(text).toBe("Réunion sans contenu");
     expect(text).not.toContain("<");
     expect(text).not.toContain(">");
   });

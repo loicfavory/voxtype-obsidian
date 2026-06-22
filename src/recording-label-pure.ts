@@ -35,6 +35,35 @@ export function findMarkerRange(
 }
 
 /**
+ * Localise le bloc marqueur (ligne de callout + sauts de ligne encadrants éventuels)
+ * afin de remplacer proprement la totalité de ce qui a été inséré par
+ * `insertMarker` sans laisser de lignes blanches parasites.
+ *
+ * Mange jusqu'à deux sauts de ligne avant et après la ligne de callout, de façon
+ * symétrique avec l'insertion `\n\n${markerText}\n\n`.
+ */
+export function findMarkerBlockRange(
+  content: string,
+  id: string,
+): { start: number; end: number } | null {
+  const lineRange = findMarkerRange(content, id);
+  if (lineRange === null) return null;
+
+  let start = lineRange.start;
+  let end = lineRange.end;
+
+  if (content.slice(start - 2, start) === "\n\n") {
+    start -= 2;
+  }
+
+  if (content.slice(end, end + 2) === "\n\n") {
+    end += 2;
+  }
+
+  return { start, end };
+}
+
+/**
  * Frame d'animation déterministe selon le tick (compteur incrémenté à chaque intervalle).
  * Cycle de période 3 : tick 0 -> ".", 1 -> "..", 2 -> "...", 3 -> "." (= tick % 3).
  */

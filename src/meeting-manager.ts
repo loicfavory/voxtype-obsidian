@@ -24,7 +24,7 @@ import { assembleFinalSummary, generateSummary, withTimeout } from "./llm/summar
 import {
   buildEmptyMeetingText,
   buildMarkerText,
-  findMarkerRange,
+  findMarkerBlockRange,
   setRecordingLabel,
   tickRecordingLabels,
 } from "./recording-label";
@@ -61,6 +61,7 @@ type PluginState =
       phase: "starting";
       title: string;
       injectionTarget: InjectionTarget | null;
+      marker?: RecordingMarker;
     }
   | {
       phase: "recording";
@@ -151,9 +152,19 @@ export class MeetingManager {
 
     const markerId = Date.now().toString();
     const marker: RecordingMarker = { id: markerId, filePath: injectionTarget.filePath };
-    await this.insertMarker(injectionTarget, buildMarkerText(markerId));
 
-    this.setState({ phase: "starting", title, injectionTarget });
+    // Section non réentrante : on passe en starting AVANT l'écriture async du
+    // marqueur. Cela bloque les double-clics et permet un rollback cohérent.
+    this.setState({ phase: "starting", title, injectionTarget, marker });
+
+    try {
+      await this.insertMarker(injectionTarget, buildMarkerText(markerId));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      new Notice(`Voxtype : impossible de poser le marqueur de réunion.\n${message}`);
+      this.setState({ phase: "idle" });
+      return;
+    }
 
     const startResult = await startMeeting(title);
     if (!startResult.ok) {
@@ -314,14 +325,14 @@ export class MeetingManager {
     const baseName = sanitizeFileName(title);
 
     try {
-      await this.ensureTranscriptsFolder(folderPath);
+      await this.ensureFolder(folderPath);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       new Notice(`Voxtype : échec de la création du dossier Transcripts.\n${message}`);
       return;
     }
 
-    const filePath = this.findUniqueTranscriptPath(folderPath, baseName);
+    const filePath = this.findUniquePath(folderPath, baseName);
 
     let transcriptFile: TFile;
     try {
@@ -401,10 +412,10 @@ export class MeetingManager {
   }
 
   /**
-   * Crée le dossier `Transcripts` s'il n'existe pas encore.
+   * Crée un dossier s'il n'existe pas encore.
    * Ne plante pas si le dossier existe déjà.
    */
-  private async ensureTranscriptsFolder(folderPath: string): Promise<void> {
+  private async ensureFolder(folderPath: string): Promise<void> {
     const existing = this.app.vault.getAbstractFileByPath(folderPath);
     if (existing !== null) return;
 
@@ -420,7 +431,7 @@ export class MeetingManager {
    * Détermine un chemin de note unique dans `folderPath` à partir du nom de base.
    * En cas de collision, suffixe avec ` (1)`, ` (2)`, etc.
    */
-  private findUniqueTranscriptPath(folderPath: string, baseName: string): string {
+  private findUniquePath(folderPath: string, baseName: string): string {
     let candidate = `${folderPath}/${baseName}.md`;
     let counter = 1;
 
@@ -466,37 +477,6 @@ export class MeetingManager {
   }
 
   /**
-   * Crée le dossier des réunions s'il n'existe pas encore.
-   * Ne plante pas si le dossier existe déjà.
-   */
-  private async ensureMeetingsFolder(folderPath: string): Promise<void> {
-    const existing = this.app.vault.getAbstractFileByPath(folderPath);
-    if (existing !== null) return;
-
-    try {
-      await this.app.vault.createFolder(folderPath);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      throw new Error(`Impossible de créer le dossier ${folderPath} : ${message}`);
-    }
-  }
-
-  /**
-   * Détermine un chemin unique dans le dossier des réunions.
-   */
-  private findUniqueMeetingPath(folderPath: string, baseName: string): string {
-    let candidate = `${folderPath}/${baseName}.md`;
-    let counter = 1;
-
-    while (this.app.vault.getAbstractFileByPath(candidate) !== null) {
-      candidate = `${folderPath}/${baseName} (${counter}).md`;
-      counter++;
-    }
-
-    return candidate;
-  }
-
-  /**
    * Crée et ouvre une note dédiée quand aucune note n'est active au démarrage.
    * Retourne la cible d'injection, ou null en cas d'échec.
    */
@@ -505,7 +485,7 @@ export class MeetingManager {
     const folderPath = settings.meetingsFolder;
 
     try {
-      await this.ensureMeetingsFolder(folderPath);
+      await this.ensureFolder(folderPath);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       new Notice(`Voxtype : échec de la création du dossier ${folderPath}.\n${message}`);
@@ -513,7 +493,7 @@ export class MeetingManager {
     }
 
     const baseName = sanitizeFileName(title);
-    const filePath = this.findUniqueMeetingPath(folderPath, baseName);
+    const filePath = this.findUniquePath(folderPath, baseName);
 
     let file: TFile;
     try {
@@ -630,35 +610,54 @@ export class MeetingManager {
     text: string,
     successNotice: string,
   ): Promise<boolean> {
-    const content = await this.app.vault.read(targetFile);
-    const range = findMarkerRange(content, markerId);
-    if (range === null) return false;
-
-    // Tenter le remplacement via l'Editor si la note est ouverte.
-    let replaced = false;
+    // F-05 : privilégier le contenu de l'éditeur s'il est ouvert (évite le
+    // snapshot stale si des modifications ne sont pas encore sauvegardées).
+    const editorHolder: Editor[] = [];
     this.app.workspace.iterateAllLeaves((leaf) => {
-      if (replaced) return;
+      if (editorHolder.length > 0) return;
       const view = leaf.view;
       if (!(view instanceof MarkdownView)) return;
       if (view.file?.path !== targetFile.path) return;
-
-      const editor = view.editor;
-      const from = editor.offsetToPos(range.start);
-      const to = editor.offsetToPos(range.end);
-      editor.replaceRange(text, from, to);
-      replaced = true;
+      editorHolder.push(view.editor);
     });
 
-    if (replaced) {
-      new Notice(successNotice);
+    const activeEditor = editorHolder[0] ?? null;
+    const content = activeEditor?.getValue() ?? (await this.app.vault.read(targetFile));
+    const range = findMarkerBlockRange(content, markerId);
+    if (range === null) return false;
+
+    // F-02 : remplacement symétrique avec la pose. `insertMarker` écrit
+    // `\n\n${marker}\n\n` ; on mange ce padding et on réinjecte `text` avec le
+    // minimum nécessaire pour éviter collage et lignes blanches résiduelles.
+    const before = content.slice(0, range.start);
+    const after = content.slice(range.end);
+    const prefix =
+      before.length > 0 && !before.endsWith("\n")
+        ? "\n\n"
+        : before.endsWith("\n") && !before.endsWith("\n\n")
+          ? "\n"
+          : "";
+    const suffix =
+      after.length > 0 && !after.startsWith("\n")
+        ? "\n\n"
+        : after.startsWith("\n") && !after.startsWith("\n\n")
+          ? "\n"
+          : "";
+    const replacement = `${prefix}${text}${suffix}`;
+
+    if (activeEditor !== null) {
+      const from = activeEditor.offsetToPos(range.start);
+      const to = activeEditor.offsetToPos(range.end);
+      activeEditor.replaceRange(replacement, from, to);
+      if (successNotice !== "") new Notice(successNotice);
       return true;
     }
 
     // Fallback : modification directe du fichier.
     try {
-      const newContent = content.slice(0, range.start) + text + content.slice(range.end);
+      const newContent = content.slice(0, range.start) + replacement + content.slice(range.end);
       await this.app.vault.modify(targetFile, newContent);
-      new Notice(`${successNotice} (modification directe)`);
+      if (successNotice !== "") new Notice(`${successNotice} (modification directe)`);
       return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -693,10 +692,35 @@ export class MeetingManager {
 
   // ── Helpers ────────────────────────────────────────────────────────────────
 
+  /**
+   * Retire le marqueur de la note en le remplaçant par une chaîne vide.
+   * Affiche une Notice si l'opération échoue ou si la note est inaccessible.
+   */
+  private async removeMarkerOrNotify(marker: RecordingMarker): Promise<void> {
+    const abstractFile = this.app.vault.getAbstractFileByPath(marker.filePath);
+    if (!(abstractFile instanceof TFile)) {
+      new Notice("Voxtype : le marqueur de démarrage n'a pas pu être retiré (note inaccessible).");
+      return;
+    }
+
+    const removed = await this.tryReplaceMarker(abstractFile, marker.id, "", "");
+    if (!removed) {
+      new Notice("Voxtype : le marqueur de démarrage n'a pas pu être retiré automatiquement.");
+    }
+  }
+
   private setState(next: PluginState): void {
+    const previous = this.state;
     this.state = next;
     this.onStateChange(next.phase);
     if (next.phase === "idle") {
+      // F-01 : si un démarrage est annulé, effacer le marqueur orphelin.
+      if (previous.phase === "starting" && previous.marker !== undefined) {
+        this.removeMarkerOrNotify(previous.marker).catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          new Notice(`Voxtype : le marqueur de démarrage n'a pas pu être retiré.\n${message}`);
+        });
+      }
       this.stopAnimation();
     }
   }
@@ -721,6 +745,10 @@ export class MeetingManager {
   /**
    * Redémarre ou arrête le timer selon le focus de la note cible.
    * Appelé à chaque changement de feuille active (via main.ts).
+   *
+   * F-06 : quand la note cible perd le focus, on arrête seulement le timer.
+   * Le widget CM6 reste visible figé sur sa dernière frame : c'est le
+   * comportement voulu (pas de reset du label qui le ferait disparaître).
    */
   refreshAnimationFocus(): void {
     if (this.currentMarker === null) return;
